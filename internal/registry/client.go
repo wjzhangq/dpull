@@ -3,6 +3,7 @@ package registry
 import (
 	"crypto/tls"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"time"
@@ -26,13 +27,21 @@ type Option func(*Client)
 func NewClient(opts ...Option) *Client {
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment, // Default: respect HTTP_PROXY/HTTPS_PROXY
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: false,
 		},
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     90 * time.Second,
-		DisableCompression:  false,
+		TLSHandshakeTimeout: 15 * time.Second,
+		// Bound the wait for response headers, NOT the body transfer.
+		// Blob bodies are large and stream for minutes on slow links.
+		ResponseHeaderTimeout: 60 * time.Second,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       90 * time.Second,
+		DisableCompression:    false,
 	}
 
 	c := &Client{
@@ -119,6 +128,20 @@ func WithTimeout(timeout time.Duration) Option {
 // This allows sharing the proxy-enabled client with downloader
 func (c *Client) HTTPClient() *http.Client {
 	return c.httpClient
+}
+
+// BlobHTTPClient returns a client for streaming blob bodies.
+//
+// It shares the transport (and thus proxy/TLS config) with the API client but
+// carries no overall Client.Timeout: that deadline covers reading the response
+// body, so a large piece on a slow link would be cut off mid-transfer and
+// exhaust its retries. Stalls are instead bounded by the transport's
+// ResponseHeaderTimeout, and cancellation flows through the request context.
+func (c *Client) BlobHTTPClient() *http.Client {
+	return &http.Client{
+		Transport:     c.httpClient.Transport,
+		CheckRedirect: c.httpClient.CheckRedirect,
+	}
 }
 
 // scheme returns the URL scheme based on plainHTTP setting

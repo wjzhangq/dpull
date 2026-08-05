@@ -94,12 +94,16 @@ func runPull(cmd *cobra.Command, args []string) error {
 	fetchRef := imageRef
 	if mirrorHost != "" {
 		m := mirror.NewMirror(mirrorHost, mirrorPath)
-		rewrittenPath := m.RewriteRef(imageRef)
+		rewrittenPath := m.Template.Render(imageRef)
 		taskState.Mirror.Endpoint = mirrorHost
 		taskState.Mirror.Path = rewrittenPath
 
-		// Construct mirror reference (still use original for manifest lookup)
-		fmt.Printf("Using mirror: %s%s\n", mirrorHost, rewrittenPath)
+		// Build the mirror reference by hand rather than re-parsing a string:
+		// the rendered path carries no tag, so ref.Parse would default it to
+		// "latest" and silently fetch the wrong image. Tag/digest and the
+		// namespace/name split are preserved from the original reference.
+		fetchRef = mirror.FetchRef(mirrorHost, rewrittenPath, imageRef)
+		fmt.Printf("Using mirror: %s\n", fetchRef.String())
 	}
 
 	// Fetch manifest
@@ -140,7 +144,7 @@ func runPull(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Downloading config (%d bytes)...\n", manifest.Config.Size)
 		configResolver := registry.NewBlobURLResolver(regClient, fetchRef, manifest.Config.Digest)
 		dl := downloader.New(
-			downloader.WithHTTPClient(regClient.HTTPClient()),
+			downloader.WithHTTPClient(regClient.BlobHTTPClient()),
 			downloader.WithMaxRetries(maxRetries),
 		)
 		configState := &store.BlobState{
@@ -159,9 +163,10 @@ func runPull(cmd *cobra.Command, args []string) error {
 		tracker.AddBlob(layer.Digest, layer.Size, i+1, len(manifest.Layers))
 	}
 
-	// Setup downloader with proxy-enabled client
+	// Setup downloader with proxy-enabled client (no overall timeout: blob
+	// bodies stream for minutes and Client.Timeout would truncate them)
 	dl := downloader.New(
-		downloader.WithHTTPClient(regClient.HTTPClient()),
+		downloader.WithHTTPClient(regClient.BlobHTTPClient()),
 		downloader.WithJobs(jobs),
 		downloader.WithConnections(conns),
 		downloader.WithMinSplitSize(minSplit),

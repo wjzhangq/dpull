@@ -145,3 +145,76 @@ func TestMirror_RewriteRef(t *testing.T) {
 		})
 	}
 }
+
+func TestFetchRef(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		path string
+		orig ref.Reference
+		want string
+	}{
+		{
+			name: "non-latest tag is preserved",
+			host: "docker.1ms.run",
+			path: "library/nginx",
+			orig: ref.Reference{
+				Registry:  "index.docker.io",
+				Namespace: "library",
+				Name:      "nginx",
+				Tag:       "alpine",
+			},
+			want: "docker.1ms.run/library/nginx:alpine",
+		},
+		{
+			name: "digest is preserved",
+			host: "docker.1ms.run",
+			path: "library/nginx",
+			orig: ref.Reference{
+				Registry:  "index.docker.io",
+				Namespace: "library",
+				Name:      "nginx",
+				Digest:    "sha256:abc123",
+			},
+			want: "docker.1ms.run/library/nginx@sha256:abc123",
+		},
+		{
+			name: "registry-prefixed path keeps multi-part namespace",
+			host: "docker.1ms.run",
+			path: "index.docker.io/dockette/nodejs",
+			orig: ref.Reference{
+				Registry:  "index.docker.io",
+				Namespace: "dockette",
+				Name:      "nodejs",
+				Tag:       "latest",
+			},
+			want: "docker.1ms.run/index.docker.io/dockette/nodejs:latest",
+		},
+		{
+			name: "path without namespace",
+			host: "mirror.example.com",
+			path: "alpine",
+			orig: ref.Reference{
+				Registry: "index.docker.io",
+				Name:     "alpine",
+				Tag:      "3.20",
+			},
+			want: "mirror.example.com/alpine:3.20",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FetchRef(tt.host, tt.path, &tt.orig)
+			if got.String() != tt.want {
+				t.Errorf("FetchRef().String() = %v, want %v", got.String(), tt.want)
+			}
+			if got.Registry != tt.host {
+				t.Errorf("Registry = %v, want %v", got.Registry, tt.host)
+			}
+			if got.Repo() != tt.path {
+				t.Errorf("Repo() = %v, want %v", got.Repo(), tt.path)
+			}
+		})
+	}
+}
