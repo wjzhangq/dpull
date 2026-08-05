@@ -44,8 +44,8 @@ dpull nginx:1.27
 # 使用代理
 dpull --proxy http://127.0.0.1:7890 nginx:1.27
 
-# 使用镜像源
-dpull -m mirror.example.com nginx:1.27
+# 使用镜像源（以 1ms.run 为例，该站路径模板为 {repo}）
+dpull -m docker.1ms.run --mirror-path "{repo}" nginx:1.27
 
 # 多连接下载（每个 blob 16 个连接，同时下载 5 个 blob）
 dpull -x 16 -j 5 docker.io/lmsysorg/sglang:v0.5.15
@@ -218,6 +218,10 @@ dpull nginx:1.27
 ### 示例
 
 ```bash
+# 1ms.run（直通型，路径模板为 {repo}）
+dpull -m docker.1ms.run --mirror-path "{repo}" nginx:1.27
+# 实际请求：https://docker.1ms.run/library/nginx
+
 # 默认模板：{registry}/{repo}
 dpull -m mirror.example.com --mirror-path "{registry}/{repo}" nginx:1.27
 # 实际请求：https://mirror.example.com/docker.io/library/nginx
@@ -226,6 +230,18 @@ dpull -m mirror.example.com --mirror-path "{registry}/{repo}" nginx:1.27
 dpull -m mirror.example.com --mirror-path "docker/{namespace}/{name}" nginx:1.27
 # 实际请求：https://mirror.example.com/docker/library/nginx
 ```
+
+### 常见镜像源模板
+
+| 镜像源 | 实际地址 | 模板 |
+|---|---|---|
+| 1ms.run（直通型） | `HOST/lmsysorg/sglang` | `{repo}` |
+| 南大镜像站 | `HOST/lmsysorg/sglang` | `{repo}` |
+| 华为 SWR ddn-k8s | `HOST/ddn-k8s/docker.io/lmsysorg/sglang` | `ddn-k8s/{registry}/{repo}` |
+| 阿里云个人版 | `HOST/myns/sglang` | `myns/{name}` |
+| Harbor Proxy Cache | `HOST/dockerhub-proxy/lmsysorg/sglang` | `dockerhub-proxy/{repo}` |
+
+> **注意**：Docker Hub 官方镜像（如 `nginx`）的完整仓库路径是 `library/nginx`，dpull 内部会自动补全，即 `{repo}` = `library/nginx`、`{namespace}` = `library`、`{name}` = `nginx`。
 
 **注意**：无论使用哪个镜像源下载，`docker load` 后显示的镜像名始终是原始名称（如 `nginx:1.27`），不会显示镜像源地址。
 
@@ -253,8 +269,8 @@ dpull --progress none nginx:1.27
 
 ```bash
 dpull --proxy http://127.0.0.1:7890 nginx:1.27
-# 或
-dpull -m mirror.example.com nginx:1.27
+# 或使用镜像源（如 1ms.run）
+dpull -m docker.1ms.run --mirror-path "{repo}" nginx:1.27
 ```
 
 增加连接数和并发数：
