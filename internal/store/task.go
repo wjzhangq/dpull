@@ -4,11 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 )
 
-// TaskState represents the persistent state of a download task
+// TaskState represents the persistent state of a download task.
+// Save and Mutate serialize writers so concurrent piece updates cannot
+// persist a stale bitfield.
 type TaskState struct {
+	mu             sync.Mutex  `json:"-"`
 	TaskID         string      `json:"task_id"`
 	Version        int         `json:"version"`
 	Canonical      string      `json:"canonical"`
@@ -53,9 +57,27 @@ func NewTaskState(taskID, canonical, platform string) *TaskState {
 	}
 }
 
-// Save atomically writes the task state to disk
-// Uses tmp → fsync → rename pattern to ensure durability
+// Save atomically writes the task state to disk.
+// Uses tmp → fsync → rename to stay durable across a crash.
 func (t *TaskState) Save(path string) error {
+	return t.Mutate(path, nil)
+}
+
+// Mutate applies fn and then persists the task. fn runs under the task lock;
+// it must not call Save or Mutate.
+func (t *TaskState) Mutate(path string, fn func()) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
+	if path == "" {
+		return nil
+	}
+	return t.saveLocked(path)
+}
+
+func (t *TaskState) saveLocked(path string) error {
 	t.UpdatedAt = time.Now()
 
 	data, err := json.MarshalIndent(t, "", "  ")
@@ -109,6 +131,23 @@ func LoadTask(path string) (*TaskState, error) {
 	return &task, nil
 }
 
+// BytesDownloaded reports durable progress for one blob.
+// A short final piece is counted at its real length, so the total cannot
+// exceed the blob size.
+func (b BlobState) BytesDownloaded() int64 {
+	if b.State == "complete" && b.Verified {
+		return b.Size
+	}
+	if b.Pieces <= 0 || b.PieceSize <= 0 || b.Bitfield == "" {
+		return 0
+	}
+	bf := NewBitfield(b.Pieces)
+	if err := bf.FromHex(b.Bitfield); err != nil {
+		return 0
+	}
+	return CoveredBytes(bf, b.PieceSize, b.Size)
+}
+
 // Progress returns download progress as a fraction [0, 1]
 func (t *TaskState) Progress() float64 {
 	if t.TotalSize == 0 {
@@ -117,16 +156,10 @@ func (t *TaskState) Progress() float64 {
 
 	var downloaded int64
 	for _, blob := range t.Blobs {
-		if blob.State == "complete" && blob.Verified {
-			downloaded += blob.Size
-		} else if blob.State == "downloading" && blob.Bitfield != "" {
-			// Estimate progress from bitfield
-			bf := NewBitfield(blob.Pieces)
-			if err := bf.FromHex(blob.Bitfield); err == nil {
-				downloaded += int64(bf.Count()) * blob.PieceSize
-			}
-		}
+		downloaded += blob.BytesDownloaded()
 	}
-
+	if downloaded > t.TotalSize {
+		downloaded = t.TotalSize
+	}
 	return float64(downloaded) / float64(t.TotalSize)
 }

@@ -44,6 +44,7 @@ func (d *PieceDownloader) DownloadPiece(ctx context.Context, urlResolver URLReso
 		}
 
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, offset+size-1))
+		decorateRequest(urlResolver, req)
 
 		resp, err := d.client.Do(req)
 		if err != nil {
@@ -87,6 +88,10 @@ func (d *PieceDownloader) DownloadPiece(ctx context.Context, urlResolver URLReso
 		if written != size {
 			return fmt.Errorf("incomplete write: %d/%d bytes", written, size)
 		}
+		// Durability before the caller marks this piece in the bitfield.
+		if err := f.Sync(); err != nil {
+			return fmt.Errorf("sync piece: %w", err)
+		}
 
 		return nil
 	}, d.maxRetries)
@@ -114,6 +119,7 @@ func (d *PieceDownloader) DownloadSingleConnection(ctx context.Context, urlResol
 		if resumeOffset > 0 {
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", resumeOffset))
 		}
+		decorateRequest(urlResolver, req)
 
 		resp, err := d.client.Do(req)
 		if err != nil {
@@ -168,6 +174,9 @@ func (d *PieceDownloader) DownloadSingleConnection(ctx context.Context, urlResol
 		if expectedSize > 0 && totalWritten != expectedSize {
 			return fmt.Errorf("incomplete download: %d/%d bytes", totalWritten, expectedSize)
 		}
+		if err := f.Sync(); err != nil {
+			return fmt.Errorf("sync: %w", err)
+		}
 
 		// Rename to final
 		if err := os.Rename(dest+".part", dest); err != nil {
@@ -176,4 +185,15 @@ func (d *PieceDownloader) DownloadSingleConnection(ctx context.Context, urlResol
 
 		return nil
 	}, d.maxRetries)
+}
+
+// decorateRequest adds registry auth when the resolver is serving the blob
+// directly. Presigned CDN URLs must not receive that header.
+func decorateRequest(resolver URLResolver, req *http.Request) {
+	type decorator interface {
+		Decorate(*http.Request)
+	}
+	if d, ok := resolver.(decorator); ok {
+		d.Decorate(req)
+	}
 }

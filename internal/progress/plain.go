@@ -2,12 +2,14 @@ package progress
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/docker/go-units"
 )
 
 // PlainTracker displays simple text progress
 type PlainTracker struct {
+	mu        sync.Mutex
 	blobs     map[string]*blobProgress
 	aggregate *Aggregate
 }
@@ -30,6 +32,8 @@ func NewPlainTracker(totalSize int64) *PlainTracker {
 
 // AddBlob registers a blob for tracking
 func (t *PlainTracker) AddBlob(digest string, size int64, index, total int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.blobs[digest] = &blobProgress{
 		digest: digest,
 		size:   size,
@@ -40,6 +44,8 @@ func (t *PlainTracker) AddBlob(digest string, size int64, index, total int) {
 
 // UpdateBlob updates and prints progress for a blob
 func (t *PlainTracker) UpdateBlob(digest string, downloaded int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	blob, ok := t.blobs[digest]
 	if !ok {
 		return
@@ -75,6 +81,8 @@ func (t *PlainTracker) UpdateBlob(digest string, downloaded int64) {
 
 // CompleteBlob prints completion message for a blob
 func (t *PlainTracker) CompleteBlob(digest string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	blob, ok := t.blobs[digest]
 	if !ok {
 		return
@@ -97,6 +105,8 @@ func (t *PlainTracker) CompleteBlob(digest string) {
 
 // SetTotal updates the total size for a blob
 func (t *PlainTracker) SetTotal(digest string, total int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if blob, ok := t.blobs[digest]; ok {
 		blob.size = total
 	}
@@ -125,4 +135,3 @@ func (t *PlainTracker) Summary() string {
 		etaStr,
 	)
 }
-

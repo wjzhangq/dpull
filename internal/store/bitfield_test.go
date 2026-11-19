@@ -185,11 +185,11 @@ func TestBitfield_ByteBoundary(t *testing.T) {
 	b := NewBitfield(17)
 
 	// Set pieces in first byte, at boundary, and in second byte
-	b.Set(0)   // byte 0, bit 7
-	b.Set(7)   // byte 0, bit 0
-	b.Set(8)   // byte 1, bit 7
-	b.Set(15)  // byte 1, bit 0
-	b.Set(16)  // byte 2, bit 7
+	b.Set(0)  // byte 0, bit 7
+	b.Set(7)  // byte 0, bit 0
+	b.Set(8)  // byte 1, bit 7
+	b.Set(15) // byte 1, bit 0
+	b.Set(16) // byte 2, bit 7
 
 	for i, want := range []bool{
 		true, false, false, false, false, false, false, true,

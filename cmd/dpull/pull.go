@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -132,6 +133,8 @@ func runPull(cmd *cobra.Command, args []string) error {
 				State:  "pending",
 			}
 		}
+	} else if len(taskState.Blobs) != len(manifest.Layers) {
+		return fmt.Errorf("task has %d blobs but manifest has %d layers", len(taskState.Blobs), len(manifest.Layers))
 	}
 
 	if err := taskState.Save(taskPath); err != nil {
@@ -152,7 +155,7 @@ func runPull(cmd *cobra.Command, args []string) error {
 			Size:   manifest.Config.Size,
 			State:  "pending",
 		}
-		if err := dl.DownloadBlob(ctx, configResolver, configPath, manifest.Config.Size, configState, nil); err != nil {
+		if err := dl.DownloadBlob(ctx, configResolver, configPath, manifest.Config.Size, configState, nil, nil); err != nil {
 			return fmt.Errorf("download config: %w", err)
 		}
 	}
@@ -173,50 +176,14 @@ func runPull(cmd *cobra.Command, args []string) error {
 		downloader.WithMaxRetries(maxRetries),
 	)
 
-	// Download all layers
+	// Download all layers. -j limits how many blobs run at once; each blob
+	// still uses -x connections internally.
 	fmt.Printf("\nDownloading %d layers (%d total)...\n", len(manifest.Layers), manifest.TotalSize())
-	for i, layer := range manifest.Layers {
-		blobState := &taskState.Blobs[i]
-
-		// Skip if already complete and verified
-		if blobState.State == "complete" && blobState.Verified {
-			tracker.CompleteBlob(layer.Digest)
-			continue
-		}
-
-		layerPath := st.BlobPath(layer.Digest)
-		urlResolver := registry.NewBlobURLResolver(regClient, fetchRef, layer.Digest)
-
-		// Download with progress updates
-		onProgress := func(downloaded int64) {
-			tracker.UpdateBlob(layer.Digest, downloaded)
-			if err := taskState.Save(taskPath); err != nil {
-				fmt.Fprintf(os.Stderr, "warn: save task state: %v\n", err)
-			}
-		}
-
-		if err := dl.DownloadBlob(ctx, urlResolver, layerPath, layer.Size, blobState, onProgress); err != nil {
-			tracker.Wait()
-			return fmt.Errorf("download layer %d/%d: %w", i+1, len(manifest.Layers), err)
-		}
-
-		// Verify integrity
-		if checkIntegrity && !blobState.Verified {
-			verified, err := st.VerifyBlob(layer.Digest)
-			if err != nil {
-				tracker.Wait()
-				return fmt.Errorf("verify layer %d: %w", i+1, err)
-			}
-			if !verified {
-				tracker.Wait()
-				st.RemoveBlob(layer.Digest)
-				return fmt.Errorf("layer %d integrity check failed (removed, retry download)", i+1)
-			}
-			blobState.Verified = true
-		}
-
-		tracker.CompleteBlob(layer.Digest)
-		taskState.Save(taskPath)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if err := downloadLayers(ctx, cancel, dl, regClient, fetchRef, st, taskState, taskPath, tracker, manifest); err != nil {
+		tracker.Wait()
+		return err
 	}
 
 	tracker.Wait()
@@ -224,6 +191,116 @@ func runPull(cmd *cobra.Command, args []string) error {
 
 	// Assemble docker-archive tar
 	return assembleTarFromTask(taskState, st, canonical, targetPlatform)
+}
+
+func downloadLayers(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	dl *downloader.Downloader,
+	regClient *registry.Client,
+	fetchRef *ref.Reference,
+	st *store.Store,
+	taskState *store.TaskState,
+	taskPath string,
+	tracker progress.Tracker,
+	manifest *registry.Manifest,
+) error {
+	limit := jobs
+	if limit < 1 {
+		limit = 1
+	}
+
+	var (
+		wg       sync.WaitGroup
+		errMu    sync.Mutex
+		firstErr error
+		sem      = make(chan struct{}, limit)
+	)
+	setErr := func(err error) {
+		errMu.Lock()
+		defer errMu.Unlock()
+		if firstErr == nil {
+			firstErr = err
+			cancel()
+		}
+	}
+
+	for i, layer := range manifest.Layers {
+		wg.Add(1)
+		go func(i int, layer registry.Descriptor) {
+			defer wg.Done()
+
+			select {
+			case <-ctx.Done():
+				return
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			}
+
+			if err := downloadOneLayer(ctx, dl, regClient, fetchRef, st, taskState, taskPath, tracker, layer, i, len(manifest.Layers)); err != nil {
+				setErr(err)
+			}
+		}(i, layer)
+	}
+
+	wg.Wait()
+	return firstErr
+}
+
+func downloadOneLayer(
+	ctx context.Context,
+	dl *downloader.Downloader,
+	regClient *registry.Client,
+	fetchRef *ref.Reference,
+	st *store.Store,
+	taskState *store.TaskState,
+	taskPath string,
+	tracker progress.Tracker,
+	layer registry.Descriptor,
+	index, total int,
+) error {
+	blobState := &taskState.Blobs[index]
+	if blobState.State == "complete" && blobState.Verified {
+		tracker.CompleteBlob(layer.Digest)
+		return nil
+	}
+
+	commit := func(fn func()) error {
+		return taskState.Mutate(taskPath, fn)
+	}
+	onProgress := func(downloaded int64) {
+		tracker.UpdateBlob(layer.Digest, downloaded)
+	}
+
+	layerPath := st.BlobPath(layer.Digest)
+	urlResolver := registry.NewBlobURLResolver(regClient, fetchRef, layer.Digest)
+	if err := dl.DownloadBlob(ctx, urlResolver, layerPath, layer.Size, blobState, commit, onProgress); err != nil {
+		return fmt.Errorf("download layer %d/%d: %w", index+1, total, err)
+	}
+
+	if checkIntegrity && !blobState.Verified {
+		verified, err := st.VerifyBlob(layer.Digest)
+		if err != nil {
+			return fmt.Errorf("verify layer %d: %w", index+1, err)
+		}
+		if !verified {
+			st.RemoveBlob(layer.Digest)
+			_ = taskState.Mutate(taskPath, func() {
+				blobState.State = "pending"
+				blobState.Verified = false
+				blobState.Bitfield = ""
+			})
+			return fmt.Errorf("layer %d integrity check failed (removed, retry download)", index+1)
+		}
+		if err := taskState.Mutate(taskPath, func() {
+			blobState.Verified = true
+		}); err != nil {
+			return fmt.Errorf("save layer %d: %w", index+1, err)
+		}
+	}
+
+	tracker.CompleteBlob(layer.Digest)
+	return nil
 }
 
 func assembleTarFromTask(taskState *store.TaskState, st *store.Store, canonical, targetPlatform string) error {

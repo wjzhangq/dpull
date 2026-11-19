@@ -76,13 +76,16 @@ func WithMaxRetries(retries int) Option {
 	}
 }
 
-// DownloadBlob downloads a blob with multi-connection splitting and bitfield resume
+// DownloadBlob downloads a blob with multi-connection splitting and bitfield resume.
+// commit persists blobState mutations. It may run from multiple piece goroutines
+// and must be safe for concurrent use. onProgress is display-only.
 func (d *Downloader) DownloadBlob(
 	ctx context.Context,
 	urlResolver URLResolver,
 	dest string,
 	size int64,
 	blobState *store.BlobState,
+	commit func(func()) error,
 	onProgress func(downloaded int64),
 ) error {
 	// Already complete
@@ -90,19 +93,64 @@ func (d *Downloader) DownloadBlob(
 		return nil
 	}
 
-	// Small blob or initial download: use single connection
-	if size < d.minSplitSize {
-		blobState.State = "downloading"
-		err := d.pieceDownloader.DownloadSingleConnection(ctx, urlResolver, dest, size)
-		if err != nil {
-			return err
-		}
-		blobState.State = "complete"
-		return nil
+	if d.useSingleConnection(ctx, urlResolver, size, blobState) {
+		return d.downloadSingle(ctx, urlResolver, dest, size, blobState, commit)
 	}
 
 	// Multi-connection download with bitfield
-	return d.downloadMultiConnection(ctx, urlResolver, dest, size, blobState, onProgress)
+	return d.downloadMultiConnection(ctx, urlResolver, dest, size, blobState, commit, onProgress)
+}
+
+// useSingleConnection is true for small blobs and for servers that ignore Range.
+// A blob that already has a saved piece plan stays on that plan.
+func (d *Downloader) useSingleConnection(ctx context.Context, urlResolver URLResolver, size int64, blobState *store.BlobState) bool {
+	if size < d.minSplitSize {
+		return true
+	}
+	if blobState.PieceSize > 0 && blobState.Pieces > 0 {
+		return false
+	}
+	prober, ok := urlResolver.(interface {
+		SupportsRange(context.Context) (bool, error)
+	})
+	if !ok {
+		return false
+	}
+	supported, err := prober.SupportsRange(ctx)
+	if err != nil {
+		// A failed probe is not proof that Range is missing.
+		return false
+	}
+	return !supported
+}
+
+func (d *Downloader) downloadSingle(
+	ctx context.Context,
+	urlResolver URLResolver,
+	dest string,
+	size int64,
+	blobState *store.BlobState,
+	commit func(func()) error,
+) error {
+	if err := applyCommit(commit, func() {
+		blobState.State = "downloading"
+	}); err != nil {
+		return err
+	}
+	if err := d.pieceDownloader.DownloadSingleConnection(ctx, urlResolver, dest, size); err != nil {
+		return err
+	}
+	return applyCommit(commit, func() {
+		blobState.State = "complete"
+	})
+}
+
+func applyCommit(commit func(func()) error, fn func()) error {
+	if commit == nil {
+		fn()
+		return nil
+	}
+	return commit(fn)
 }
 
 func (d *Downloader) downloadMultiConnection(
@@ -111,67 +159,88 @@ func (d *Downloader) downloadMultiConnection(
 	dest string,
 	size int64,
 	blobState *store.BlobState,
+	commit func(func()) error,
 	onProgress func(downloaded int64),
 ) error {
-	// Calculate piece size
-	pieceSize := max(d.minSplitSize, size/int64(d.connections))
-	pieces := int((size + pieceSize - 1) / pieceSize)
+	pieceSize, pieces := resolvePiecePlan(size, d.minSplitSize, d.connections, blobState.PieceSize, blobState.Pieces)
 
-	// Initialize or load bitfield
 	bitfield := store.NewBitfield(pieces)
+	resetBits := false
 	if blobState.Bitfield != "" {
 		if err := bitfield.FromHex(blobState.Bitfield); err != nil {
-			// Corrupted bitfield, start fresh
+			// Corrupted bitfield, start fresh. Piece geometry stays the same.
 			bitfield = store.NewBitfield(pieces)
+			resetBits = true
 		}
 	}
 
-	// Update blob state
-	blobState.PieceSize = pieceSize
-	blobState.Pieces = pieces
-	blobState.State = "downloading"
-
-	// Prepare .part file
 	partPath := dest + ".part"
-	f, err := os.OpenFile(partPath, os.O_WRONLY|os.O_CREATE, 0644)
+	partExists, destExists, err := existingFiles(partPath, dest)
 	if err != nil {
-		return fmt.Errorf("create part file: %w", err)
+		return err
 	}
-	if err := f.Truncate(size); err != nil {
-		f.Close()
-		return fmt.Errorf("truncate part file: %w", err)
-	}
-	f.Close()
-
-	// Find missing pieces
-	missing := bitfield.Missing()
-	if len(missing) == 0 {
-		// All pieces done, just rename
-		if err := os.Rename(partPath, dest); err != nil {
-			return fmt.Errorf("rename: %w", err)
+	if bitfield.Count() > 0 && !partExists && !destExists {
+		for i := 0; i < bitfield.Pieces(); i++ {
+			bitfield.Clear(i)
 		}
-		blobState.State = "complete"
-		return nil
+		resetBits = true
 	}
 
-	// Download missing pieces with concurrency limit
+	if err := applyCommit(commit, func() {
+		blobState.PieceSize = pieceSize
+		blobState.Pieces = pieces
+		blobState.State = "downloading"
+		if resetBits {
+			blobState.Bitfield = ""
+		}
+	}); err != nil {
+		return err
+	}
+
+	missing := bitfield.Missing()
+	if len(missing) == 0 && (partExists || destExists) {
+		if partExists {
+			return finishBlob(partPath, dest, blobState, commit)
+		}
+		return applyCommit(commit, func() {
+			blobState.State = "complete"
+		})
+	}
+
+	if err := preparePartFile(partPath, size); err != nil {
+		return err
+	}
+
+	connections := d.connections
+	if connections < 1 {
+		connections = 1
+	}
+
 	var (
-		wg     sync.WaitGroup
-		errMu  sync.Mutex
+		wg       sync.WaitGroup
+		errMu    sync.Mutex
 		firstErr error
-		sem    = make(chan struct{}, d.connections)
+		sem      = make(chan struct{}, connections)
 	)
 
 	for _, pieceIdx := range missing {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case sem <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			break
 		}
-
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
+
+			select {
+			case <-ctx.Done():
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = ctx.Err()
+				}
+				errMu.Unlock()
+				return
+			case sem <- struct{}{}:
+			}
 			defer func() { <-sem }()
 
 			offset := int64(idx) * pieceSize
@@ -187,13 +256,22 @@ func (d *Downloader) downloadMultiConnection(
 				return
 			}
 
-			// Mark piece complete
-			bitfield.Set(idx)
-			blobState.Bitfield = bitfield.ToHex()
-
-			// Report progress
+			var downloaded int64
+			err = applyCommit(commit, func() {
+				bitfield.Set(idx)
+				blobState.Bitfield = bitfield.ToHex()
+				downloaded = store.CoveredBytes(bitfield, pieceSize, size)
+			})
+			if err != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("save piece %d: %w", idx, err)
+				}
+				errMu.Unlock()
+				return
+			}
 			if onProgress != nil {
-				onProgress(int64(bitfield.Count()) * pieceSize)
+				onProgress(downloaded)
 			}
 		}(pieceIdx)
 	}
@@ -204,24 +282,48 @@ func (d *Downloader) downloadMultiConnection(
 		return firstErr
 	}
 
-	// All pieces done
+	return finishBlob(partPath, dest, blobState, commit)
+}
+
+func existingFiles(partPath, dest string) (partExists, destExists bool, err error) {
+	switch _, err := os.Stat(partPath); {
+	case err == nil:
+		partExists = true
+	case !os.IsNotExist(err):
+		return false, false, fmt.Errorf("stat part file: %w", err)
+	}
+	switch _, err := os.Stat(dest); {
+	case err == nil:
+		destExists = true
+	case !os.IsNotExist(err):
+		return false, false, fmt.Errorf("stat blob: %w", err)
+	}
+	return partExists, destExists, nil
+}
+
+func preparePartFile(partPath string, size int64) error {
+	f, err := os.OpenFile(partPath, os.O_WRONLY|os.O_CREATE, 0644)
+	if err != nil {
+		return fmt.Errorf("create part file: %w", err)
+	}
+	if err := f.Truncate(size); err != nil {
+		f.Close()
+		return fmt.Errorf("truncate part file: %w", err)
+	}
+	return f.Close()
+}
+
+func finishBlob(partPath, dest string, blobState *store.BlobState, commit func(func()) error) error {
 	if err := os.Rename(partPath, dest); err != nil {
 		return fmt.Errorf("rename: %w", err)
 	}
-
-	blobState.State = "complete"
-	return nil
+	return applyCommit(commit, func() {
+		blobState.State = "complete"
+	})
 }
 
 func min(a, b int64) int64 {
 	if a < b {
-		return a
-	}
-	return b
-}
-
-func max(a, b int64) int64 {
-	if a > b {
 		return a
 	}
 	return b

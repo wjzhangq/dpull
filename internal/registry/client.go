@@ -159,22 +159,28 @@ func (c *Client) buildURL(host, path string) string {
 
 // do performs an HTTP request with authentication
 func (c *Client) do(req *http.Request) (*http.Response, error) {
-	// Set user agent
+	if err := c.setAuth(req); err != nil {
+		return nil, err
+	}
+	return c.httpClient.Do(req)
+}
+
+// setAuth attaches the registry credential. Presigned CDN URLs must not use it.
+func (c *Client) setAuth(req *http.Request) error {
 	req.Header.Set("User-Agent", c.userAgent)
 
-	// Add authentication if available
 	authConfig, err := c.auth.Authorization()
 	if err != nil {
-		return nil, fmt.Errorf("get auth: %w", err)
+		return fmt.Errorf("get auth: %w", err)
 	}
-
-	if authConfig != nil && authConfig.Username != "" {
+	if authConfig == nil {
+		return nil
+	}
+	if authConfig.Username != "" {
 		req.SetBasicAuth(authConfig.Username, authConfig.Password)
 	}
-
-	if authConfig != nil && authConfig.RegistryToken != "" {
+	if authConfig.RegistryToken != "" {
 		req.Header.Set("Authorization", "Bearer "+authConfig.RegistryToken)
 	}
-
-	return c.httpClient.Do(req)
+	return nil
 }

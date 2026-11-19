@@ -62,19 +62,10 @@ func runInfo(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Layers:     %d\n", len(manifest.Layers))
 	fmt.Printf("Total Size: %s (compressed)\n", units.HumanSize(float64(manifest.TotalSize())))
 
-	// Show largest layers
 	if len(manifest.Layers) > 0 {
-		fmt.Printf("\nLayer breakdown:\n")
+		fmt.Printf("\nLayers:\n")
 		for i, layer := range manifest.Layers {
-			digest := layer.Digest
-			if len(digest) > 19 {
-				digest = digest[:19] + "..."
-			}
-			fmt.Printf("  %2d. %s  %s\n", i+1, digest, units.HumanSize(float64(layer.Size)))
-			if i >= 4 && len(manifest.Layers) > 5 {
-				fmt.Printf("  ... and %d more\n", len(manifest.Layers)-5)
-				break
-			}
+			fmt.Printf("  %2d. %s  %s\n", i+1, layer.Digest, units.HumanSize(float64(layer.Size)))
 		}
 	}
 

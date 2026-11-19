@@ -63,6 +63,8 @@ func (t *BarTracker) AddBlob(digest string, size int64, index, total int) {
 
 // UpdateBlob updates progress for a specific blob
 func (t *BarTracker) UpdateBlob(digest string, downloaded int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if bar, ok := t.bars[digest]; ok {
 		bar.SetCurrent(downloaded)
 	}
@@ -117,4 +119,3 @@ func (t *BarTracker) Summary() string {
 		etaStr,
 	)
 }
-

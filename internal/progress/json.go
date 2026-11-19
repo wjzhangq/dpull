@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 )
 
 // JSONTracker outputs progress as JSON events
 type JSONTracker struct {
+	mu        sync.Mutex
 	blobs     map[string]*jsonBlobProgress
 	aggregate *Aggregate
 }
@@ -43,6 +45,8 @@ func NewJSONTracker(totalSize int64) *JSONTracker {
 
 // AddBlob emits a layer_start event
 func (t *JSONTracker) AddBlob(digest string, size int64, index, total int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.blobs[digest] = &jsonBlobProgress{
 		digest: digest,
 		size:   size,
@@ -62,6 +66,8 @@ func (t *JSONTracker) AddBlob(digest string, size int64, index, total int) {
 
 // UpdateBlob emits a layer_progress event
 func (t *JSONTracker) UpdateBlob(digest string, downloaded int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	blob, ok := t.blobs[digest]
 	if !ok {
 		return
@@ -94,6 +100,8 @@ func (t *JSONTracker) CompleteBlob(digest string) {
 
 // SetTotal updates blob size (no event emitted)
 func (t *JSONTracker) SetTotal(digest string, total int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if blob, ok := t.blobs[digest]; ok {
 		blob.size = total
 	}

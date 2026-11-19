@@ -90,6 +90,33 @@ func (b *Bitfield) Complete() bool {
 	return true
 }
 
+// CoveredBytes returns how many bytes the completed pieces account for.
+// The last piece may be shorter than pieceSize; it is not rounded up.
+func CoveredBytes(b *Bitfield, pieceSize, total int64) int64 {
+	if b == nil || pieceSize <= 0 || total <= 0 {
+		return 0
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	var n int64
+	for i := 0; i < b.pieces; i++ {
+		if b.bits[i/8]&(1<<(7-i%8)) == 0 {
+			continue
+		}
+		start := int64(i) * pieceSize
+		if start >= total {
+			break
+		}
+		end := start + pieceSize
+		if end > total {
+			end = total
+		}
+		n += end - start
+	}
+	return n
+}
+
 // Missing returns the indices of pieces still to download, in order.
 func (b *Bitfield) Missing() []int {
 	b.mu.RLock()
