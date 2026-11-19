@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -12,10 +13,11 @@ import (
 	"github.com/wjzhangq/dpull/internal/ref"
 )
 
-// GetManifest fetches the manifest for an image reference
-func (c *Client) GetManifest(r *ref.Reference, platform string) (*Manifest, error) {
+// GetManifest fetches the manifest for an image reference.
+// ctx bounds the registry calls so a dead host can be abandoned quickly.
+func (c *Client) GetManifest(ctx context.Context, r *ref.Reference, platform string) (*Manifest, error) {
 	// Authenticate first
-	authedClient, err := c.authenticate(r.Registry, r.Repo())
+	authedClient, err := c.authenticate(ctx, r.Registry, r.Repo())
 	if err != nil {
 		return nil, fmt.Errorf("authenticate: %w", err)
 	}
@@ -28,7 +30,7 @@ func (c *Client) GetManifest(r *ref.Reference, platform string) (*Manifest, erro
 
 	// Fetch manifest
 	url := authedClient.buildURL(r.Registry, fmt.Sprintf("/v2/%s/manifests/%s", r.Repo(), reference))
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create manifest request: %w", err)
 	}
@@ -48,8 +50,8 @@ func (c *Client) GetManifest(r *ref.Reference, platform string) (*Manifest, erro
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("fetch manifest: %d %s", resp.StatusCode, string(body))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, &HTTPStatusError{Op: "fetch manifest", Code: resp.StatusCode, Body: string(body)}
 	}
 
 	// Read body and compute digest
@@ -61,7 +63,7 @@ func (c *Client) GetManifest(r *ref.Reference, platform string) (*Manifest, erro
 	manifestDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(body))
 	// Check if it's a manifest list/index. Some registries append "; charset=utf-8".
 	if isIndex(resp.Header.Get("Content-Type"), body) {
-		return authedClient.selectPlatformManifest(r, body, platform)
+		return authedClient.selectPlatformManifest(ctx, r, body, platform)
 	}
 
 	// Single manifest
@@ -94,7 +96,7 @@ func looksLikeIndex(body []byte) bool {
 }
 
 // selectPlatformManifest selects a platform-specific manifest from a list
-func (c *Client) selectPlatformManifest(r *ref.Reference, listBody []byte, platform string) (*Manifest, error) {
+func (c *Client) selectPlatformManifest(ctx context.Context, r *ref.Reference, listBody []byte, platform string) (*Manifest, error) {
 	var list ManifestList
 	if err := json.Unmarshal(listBody, &list); err != nil {
 		return nil, fmt.Errorf("parse manifest list: %w", err)
@@ -107,7 +109,7 @@ func (c *Client) selectPlatformManifest(r *ref.Reference, listBody []byte, platf
 
 	// Fetch the platform-specific manifest
 	url := c.buildURL(r.Registry, fmt.Sprintf("/v2/%s/manifests/%s", r.Repo(), selectedDigest))
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create platform manifest request: %w", err)
 	}
@@ -124,8 +126,8 @@ func (c *Client) selectPlatformManifest(r *ref.Reference, listBody []byte, platf
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("fetch platform manifest: %d %s", resp.StatusCode, string(body))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, &HTTPStatusError{Op: "fetch platform manifest", Code: resp.StatusCode, Body: string(body)}
 	}
 
 	var manifest Manifest
@@ -198,7 +200,7 @@ func parsePlatform(platform string) (os, arch string) {
 
 // GetConfig fetches the image configuration blob
 func (c *Client) GetConfig(r *ref.Reference, configDigest string) (*ImageConfig, error) {
-	authedClient, err := c.authenticate(r.Registry, r.Repo())
+	authedClient, err := c.authenticate(context.Background(), r.Registry, r.Repo())
 	if err != nil {
 		return nil, fmt.Errorf("authenticate: %w", err)
 	}

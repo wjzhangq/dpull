@@ -46,7 +46,7 @@ func (r *BlobURLResolver) Get(ctx context.Context) (string, error) {
 	}
 	r.mu.Unlock()
 
-	authedClient, err := r.client.authenticate(r.ref.Registry, r.ref.Repo())
+	authedClient, err := r.client.authenticate(ctx, r.ref.Registry, r.ref.Repo())
 	if err != nil {
 		return "", fmt.Errorf("authenticate: %w", err)
 	}
@@ -173,7 +173,7 @@ func parsePresignExpiry(urlStr string, now time.Time) time.Time {
 
 // TestBlobAccess tests if blob download is accessible
 func (c *Client) TestBlobAccess(r *ref.Reference, digest string) (bool, bool) {
-	authedClient, err := c.authenticate(r.Registry, r.Repo())
+	authedClient, err := c.authenticate(context.Background(), r.Registry, r.Repo())
 	if err != nil {
 		return false, false
 	}

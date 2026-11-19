@@ -22,6 +22,7 @@ var (
 	platform     string
 	mirrorHost   string
 	mirrorPath   string
+	autoMirror   bool
 	plainHTTP    bool
 )
 
@@ -40,8 +41,8 @@ Examples:
   # With proxy
   dpull --proxy http://127.0.0.1:7890 nginx:1.27
 
-  # Pull through a mirror. The image repository is appended automatically.
-  dpull -m docker.1ms.run nginx:1.27
+  # Pull through a named mirror. docker.io is tried first unless -m is set.
+  dpull -m 1ms nginx:1.27
 
   # Rename the image stored in the tar
   dpull -m docker.1ms.run --name mynginx:1.27 nginx:1.27
@@ -79,8 +80,9 @@ func init() {
 	// path prefix. The image repository is appended, so -m docker.1ms.run
 	// fetches docker.1ms.run/library/nginx. --mirror-path is only for a layout
 	// that cannot be written as a prefix.
-	rootCmd.PersistentFlags().StringVarP(&mirrorHost, "mirror", "m", "", "mirror address, e.g. docker.1ms.run or host/prefix")
+	rootCmd.PersistentFlags().StringVarP(&mirrorHost, "mirror", "m", "", "mirror to use (1ms, xuanyuan, daocloud, hubfast, dockerproxy, or a host)")
 	rootCmd.PersistentFlags().StringVar(&mirrorPath, "mirror-path", "", "advanced path template; leave empty to use the mirror address as-is")
+	rootCmd.PersistentFlags().BoolVar(&autoMirror, "auto-mirror", true, "if docker.io is unreachable, try the built-in mirrors")
 
 	// Plain HTTP (for local testing)
 	rootCmd.PersistentFlags().BoolVar(&plainHTTP, "plain-http", false, "use HTTP instead of HTTPS (insecure, for testing)")
@@ -98,6 +100,7 @@ func init() {
 	viper.BindPFlag("mirror.path_template", rootCmd.PersistentFlags().Lookup("mirror-path"))
 
 	// Add subcommands
+	rootCmd.AddCommand(mirrorsCmd)
 	rootCmd.AddCommand(infoCmd)
 	rootCmd.AddCommand(lsCmd)
 	rootCmd.AddCommand(resumeCmd)

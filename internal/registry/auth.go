@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,10 +20,10 @@ type BearerToken struct {
 
 // AuthChallenge represents a WWW-Authenticate challenge
 type AuthChallenge struct {
-	Scheme string
-	Realm  string
+	Scheme  string
+	Realm   string
 	Service string
-	Scope  string
+	Scope   string
 }
 
 // parseAuthChallenge parses a WWW-Authenticate header
@@ -59,8 +60,8 @@ func parseAuthChallenge(header string) (*AuthChallenge, error) {
 }
 
 // fetchBearerToken exchanges credentials for a bearer token
-func (c *Client) fetchBearerToken(challenge *AuthChallenge) (string, error) {
-	req, err := http.NewRequest("GET", challenge.Realm, nil)
+func (c *Client) fetchBearerToken(ctx context.Context, challenge *AuthChallenge) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", challenge.Realm, nil)
 	if err != nil {
 		return "", fmt.Errorf("create token request: %w", err)
 	}
@@ -113,10 +114,10 @@ func (c *Client) fetchBearerToken(challenge *AuthChallenge) (string, error) {
 
 // authenticate handles registry authentication challenges
 // Returns a new Client with bearer token authentication
-func (c *Client) authenticate(host, repo string) (*Client, error) {
+func (c *Client) authenticate(ctx context.Context, host, repo string) (*Client, error) {
 	// Ping registry to get auth challenge
 	pingURL := c.buildURL(host, "/v2/")
-	req, err := http.NewRequest("GET", pingURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", pingURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create ping request: %w", err)
 	}
@@ -134,7 +135,7 @@ func (c *Client) authenticate(host, repo string) (*Client, error) {
 	}
 
 	if resp.StatusCode != http.StatusUnauthorized {
-		return nil, fmt.Errorf("unexpected ping status: %d", resp.StatusCode)
+		return nil, &HTTPStatusError{Op: "ping registry", Code: resp.StatusCode}
 	}
 
 	// Parse auth challenge
@@ -158,7 +159,7 @@ func (c *Client) authenticate(host, repo string) (*Client, error) {
 	}
 
 	// Fetch token
-	token, err := c.fetchBearerToken(challenge)
+	token, err := c.fetchBearerToken(ctx, challenge)
 	if err != nil {
 		return nil, fmt.Errorf("fetch bearer token: %w", err)
 	}

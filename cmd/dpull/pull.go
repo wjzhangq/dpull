@@ -16,7 +16,6 @@ import (
 	"github.com/wjzhangq/dpull/internal/archive"
 	"github.com/wjzhangq/dpull/internal/auth"
 	"github.com/wjzhangq/dpull/internal/downloader"
-	"github.com/wjzhangq/dpull/internal/mirror"
 	"github.com/wjzhangq/dpull/internal/progress"
 	"github.com/wjzhangq/dpull/internal/ref"
 	"github.com/wjzhangq/dpull/internal/registry"
@@ -94,29 +93,14 @@ func runPull(cmd *cobra.Command, args []string) error {
 	// Setup registry client with proxy
 	regClient := setupRegistryClient(imageRef)
 
-	// Apply mirror rewrite if configured
-	fetchRef := imageRef
-	if mirrorHost != "" {
-		host, repoPath, err := mirror.Resolve(mirrorHost, mirrorPath, imageRef)
-		if err != nil {
-			return fmt.Errorf("mirror: %w", err)
-		}
-		taskState.Mirror.Endpoint = host
-		taskState.Mirror.Path = repoPath
-
-		// Build the mirror reference by hand rather than re-parsing a string:
-		// the rendered path carries no tag, so ref.Parse would default it to
-		// "latest" and silently fetch the wrong image. Tag/digest and the
-		// namespace/name split are preserved from the original reference.
-		fetchRef = mirror.FetchRef(host, repoPath, imageRef)
-		fmt.Printf("Using mirror: %s\n", fetchRef.String())
-	}
-
-	// Fetch manifest
 	fmt.Printf("Fetching manifest for %s...\n", canonical)
-	manifest, err := regClient.GetManifest(fetchRef, targetPlatform)
+	fetchRef, manifest, sources, err := prepareFetch(ctx, regClient, imageRef, targetPlatform)
 	if err != nil {
-		return fmt.Errorf("fetch manifest: %w", err)
+		return err
+	}
+	if fetchRef.Registry != imageRef.Registry {
+		taskState.Mirror.Endpoint = fetchRef.Registry
+		taskState.Mirror.Path = fetchRef.Repo()
 	}
 	printPlatformChoice(targetPlatform, manifest)
 
@@ -187,7 +171,7 @@ func runPull(cmd *cobra.Command, args []string) error {
 	fmt.Printf("\nDownloading %d layers (%d total)...\n", len(manifest.Layers), manifest.TotalSize())
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	if err := downloadLayers(ctx, cancel, dl, regClient, fetchRef, st, taskState, taskPath, tracker, manifest); err != nil {
+	if err := downloadLayers(ctx, cancel, dl, regClient, sources, st, taskState, taskPath, tracker, manifest); err != nil {
 		tracker.Wait()
 		return err
 	}
@@ -223,7 +207,7 @@ func downloadLayers(
 	cancel context.CancelFunc,
 	dl *downloader.Downloader,
 	regClient *registry.Client,
-	fetchRef *ref.Reference,
+	sources []*ref.Reference,
 	st *store.Store,
 	taskState *store.TaskState,
 	taskPath string,
@@ -262,7 +246,7 @@ func downloadLayers(
 				defer func() { <-sem }()
 			}
 
-			if err := downloadOneLayer(ctx, dl, regClient, fetchRef, st, taskState, taskPath, tracker, layer, i, len(manifest.Layers)); err != nil {
+			if err := downloadOneLayer(ctx, dl, regClient, sources, st, taskState, taskPath, tracker, layer, i, len(manifest.Layers)); err != nil {
 				setErr(err)
 			}
 		}(i, layer)
@@ -276,7 +260,7 @@ func downloadOneLayer(
 	ctx context.Context,
 	dl *downloader.Downloader,
 	regClient *registry.Client,
-	fetchRef *ref.Reference,
+	sources []*ref.Reference,
 	st *store.Store,
 	taskState *store.TaskState,
 	taskPath string,
@@ -289,7 +273,56 @@ func downloadOneLayer(
 		tracker.CompleteBlob(layer.Digest)
 		return nil
 	}
+	if len(sources) == 0 {
+		return fmt.Errorf("download layer %d/%d: no registry", index+1, total)
+	}
 
+	var lastErr error
+	for i, src := range sources {
+		err := downloadLayerFrom(ctx, dl, regClient, src, st, taskState, taskPath, tracker, blobState, layer, index, total)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if i == len(sources)-1 || !layerCanFailOver(err) {
+			return err
+		}
+		fmt.Printf("Layer %d via %s failed: %v\nTrying %s\n", index+1, src.Registry, err, sources[i+1].Registry)
+		if integrityFailed(err) {
+			st.RemoveBlob(layer.Digest)
+			_ = taskState.Mutate(taskPath, func() {
+				blobState.State = "pending"
+				blobState.Verified = false
+				blobState.Bitfield = ""
+				blobState.PieceSize = 0
+				blobState.Pieces = 0
+			})
+		}
+	}
+	return lastErr
+}
+
+func layerCanFailOver(err error) bool {
+	return registry.IsReachabilityError(err) || integrityFailed(err)
+}
+
+func integrityFailed(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "integrity check failed")
+}
+
+func downloadLayerFrom(
+	ctx context.Context,
+	dl *downloader.Downloader,
+	regClient *registry.Client,
+	fetchRef *ref.Reference,
+	st *store.Store,
+	taskState *store.TaskState,
+	taskPath string,
+	tracker progress.Tracker,
+	blobState *store.BlobState,
+	layer registry.Descriptor,
+	index, total int,
+) error {
 	commit := func(fn func()) error {
 		return taskState.Mutate(taskPath, fn)
 	}
@@ -309,13 +342,7 @@ func downloadOneLayer(
 			return fmt.Errorf("verify layer %d: %w", index+1, err)
 		}
 		if !verified {
-			st.RemoveBlob(layer.Digest)
-			_ = taskState.Mutate(taskPath, func() {
-				blobState.State = "pending"
-				blobState.Verified = false
-				blobState.Bitfield = ""
-			})
-			return fmt.Errorf("layer %d integrity check failed (removed, retry download)", index+1)
+			return fmt.Errorf("layer %d integrity check failed", index+1)
 		}
 		if err := taskState.Mutate(taskPath, func() {
 			blobState.Verified = true

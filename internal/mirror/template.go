@@ -86,6 +86,7 @@ func Parse(raw string) (host, prefix string, err error) {
 //
 // template is the advanced --mirror-path form. It is applied only when set.
 func Resolve(mirrorSpec, template string, image *ref.Reference) (host, repoPath string, err error) {
+	mirrorSpec = Expand(mirrorSpec)
 	host, prefix, err := Parse(mirrorSpec)
 	if err != nil {
 		return "", "", err

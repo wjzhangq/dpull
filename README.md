@@ -35,6 +35,22 @@ go install github.com/wjzhangq/dpull/cmd/dpull@latest
 
 ## 快速开始
 
+### 验证安装
+
+`hello-world:latest` 只有一层、体积很小，用来确认网络和 `docker load` 是否正常。官方镜像是 Linux，Mac 上请带上 `--platform linux/amd64`。
+
+```bash
+dpull --platform linux/amd64 hello-world:latest
+docker load -i hello-world_latest.tar
+docker run --rm hello-world
+```
+
+`docker.io` 连不上时会自动试内置镜像站。也可以指定一个站：
+
+```bash
+dpull -m 1ms --platform linux/amd64 hello-world:latest
+```
+
 ### 基本用法
 
 ```bash
@@ -208,7 +224,23 @@ dpull nginx:1.27
 
 ## 镜像源
 
-`-m` 写镜像站地址。镜像自己的仓库路径会接在后面，不用再写 `{repo}` 这类模板。
+`-m` 写镜像站地址或内置简称。镜像自己的仓库路径会接在后面。不写 `-m` 时先访问 docker.io；连不上就自动试内置镜像站（`--auto-mirror=false` 可关掉）。
+
+```bash
+dpull mirrors
+dpull -m 1ms nginx:1.27
+dpull -m https://docker.xuanyuan.me nginx:1.27
+```
+
+| 简称 | 地址 | 顺序 |
+|---|---|---|
+| `1ms` | `docker.1ms.run` | 优先 |
+| `xuanyuan` | `docker.xuanyuan.me` | 优先 |
+| `daocloud` | `docker.m.daocloud.io` | 备用 |
+| `hubfast` | `free.hubfast.cn` | 备用 |
+| `dockerproxy` | `dockerproxy.net` | 备用 |
+
+优先的两个站同时探测，谁先返回 manifest 用谁。某一层中途断线，这一层会换到下一个站，其它层不受影响。
 
 ```bash
 # 1ms.run

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
+	"github.com/wjzhangq/dpull/internal/registry"
 )
 
 var (
@@ -49,6 +50,7 @@ func RetryWithBackoff(op func() error, maxRetries int) error {
 
 	b := retryConfig(maxRetries)
 	var lastErr error
+	dialFails := 0
 
 	for {
 		lastErr = op()
@@ -58,6 +60,14 @@ func RetryWithBackoff(op func() error, maxRetries int) error {
 
 		if !isRetryableError(lastErr) {
 			return lastErr
+		}
+		// A host that never answers should fail over instead of backing off
+		// through the full retry budget.
+		if registry.IsDialError(lastErr) {
+			dialFails++
+			if dialFails >= 2 {
+				return fmt.Errorf("host unreachable: %w", lastErr)
+			}
 		}
 
 		wait := b.NextBackOff()

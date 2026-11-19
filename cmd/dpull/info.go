@@ -1,13 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 	"time"
 
 	"github.com/docker/go-units"
 	"github.com/spf13/cobra"
-	"github.com/wjzhangq/dpull/internal/mirror"
 	"github.com/wjzhangq/dpull/internal/ref"
 )
 
@@ -33,24 +33,12 @@ func runInfo(cmd *cobra.Command, args []string) error {
 		targetPlatform = fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 
-	fetchRef := imageRef
-	if mirrorHost != "" {
-		host, repoPath, err := mirror.Resolve(mirrorHost, mirrorPath, imageRef)
-		if err != nil {
-			return fmt.Errorf("mirror: %w", err)
-		}
-		fetchRef = mirror.FetchRef(host, repoPath, imageRef)
-		fmt.Printf("Using mirror: %s\n", fetchRef.String())
-	}
-
-	// Setup registry client
 	regClient := setupRegistryClient(imageRef)
 
-	// Fetch manifest
 	fmt.Printf("Fetching manifest for %s...\n\n", canonical)
-	manifest, err := regClient.GetManifest(fetchRef, targetPlatform)
+	fetchRef, manifest, _, err := prepareFetch(context.Background(), regClient, imageRef, targetPlatform)
 	if err != nil {
-		return fmt.Errorf("fetch manifest: %w", err)
+		return err
 	}
 
 	// Fetch config for additional details
