@@ -88,8 +88,7 @@ auth:
 
 # Mirror configuration (optional)
 # mirror:
-#   endpoint: "mirror.example.com"
-#   path_template: "{registry}/{repo}"
+#   endpoint: "docker.1ms.run"
 `
 
 	// Write config file

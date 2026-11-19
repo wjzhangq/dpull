@@ -7,6 +7,7 @@ import (
 
 	"github.com/docker/go-units"
 	"github.com/spf13/cobra"
+	"github.com/wjzhangq/dpull/internal/mirror"
 	"github.com/wjzhangq/dpull/internal/ref"
 )
 
@@ -32,18 +33,28 @@ func runInfo(cmd *cobra.Command, args []string) error {
 		targetPlatform = fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 
+	fetchRef := imageRef
+	if mirrorHost != "" {
+		host, repoPath, err := mirror.Resolve(mirrorHost, mirrorPath, imageRef)
+		if err != nil {
+			return fmt.Errorf("mirror: %w", err)
+		}
+		fetchRef = mirror.FetchRef(host, repoPath, imageRef)
+		fmt.Printf("Using mirror: %s\n", fetchRef.String())
+	}
+
 	// Setup registry client
 	regClient := setupRegistryClient(imageRef)
 
 	// Fetch manifest
 	fmt.Printf("Fetching manifest for %s...\n\n", canonical)
-	manifest, err := regClient.GetManifest(imageRef, targetPlatform)
+	manifest, err := regClient.GetManifest(fetchRef, targetPlatform)
 	if err != nil {
 		return fmt.Errorf("fetch manifest: %w", err)
 	}
 
 	// Fetch config for additional details
-	config, err := regClient.GetConfig(imageRef, manifest.Config.Digest)
+	config, err := regClient.GetConfig(fetchRef, manifest.Config.Digest)
 	if err != nil {
 		fmt.Fprintf(cmd.OutOrStderr(), "warn: fetch config: %v\n", err)
 		config = nil
@@ -52,11 +63,12 @@ func runInfo(cmd *cobra.Command, args []string) error {
 	// Display info
 	fmt.Printf("Image:      %s\n", canonical)
 	fmt.Printf("Digest:     %s\n", manifest.Digest)
-	if config != nil {
+	printPlatformChoice(targetPlatform, manifest)
+	if config != nil && manifest.Platform == "" {
 		fmt.Printf("Platform:   %s/%s\n", config.OS, config.Architecture)
-		if !config.Created.IsZero() {
-			fmt.Printf("Created:    %s\n", config.Created.Format(time.RFC3339))
-		}
+	}
+	if config != nil && !config.Created.IsZero() {
+		fmt.Printf("Created:    %s\n", config.Created.Format(time.RFC3339))
 	}
 	fmt.Printf("\n")
 	fmt.Printf("Layers:     %d\n", len(manifest.Layers))

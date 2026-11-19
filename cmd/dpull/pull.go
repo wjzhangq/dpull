@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 
 var (
 	outputPath     string
+	outputName     string
 	continueFlag   bool
 	force          bool
 	checkIntegrity bool
@@ -33,6 +35,7 @@ var (
 
 func init() {
 	rootCmd.Flags().StringVarP(&outputPath, "output", "o", "", "output tar file (default: auto-generated)")
+	rootCmd.Flags().StringVar(&outputName, "name", "", "rename the image stored in the tar, e.g. mynginx:1.27")
 	rootCmd.Flags().BoolVarP(&continueFlag, "continue", "c", false, "continue interrupted download")
 	rootCmd.Flags().BoolVar(&force, "force", false, "force re-download even if task exists")
 	rootCmd.Flags().BoolVar(&checkIntegrity, "check-integrity", true, "verify sha256 after download")
@@ -81,7 +84,7 @@ func runPull(cmd *cobra.Command, args []string) error {
 		// Check if already complete
 		if taskState.Progress() >= 1.0 {
 			fmt.Println("Download already complete, assembling tar...")
-			return assembleTarFromTask(taskState, st, canonical, targetPlatform)
+			return assembleTarFromTask(taskState, st, loadName(canonical), targetPlatform)
 		}
 		fmt.Printf("Continuing existing task %s\n", taskID)
 	} else {
@@ -94,25 +97,28 @@ func runPull(cmd *cobra.Command, args []string) error {
 	// Apply mirror rewrite if configured
 	fetchRef := imageRef
 	if mirrorHost != "" {
-		m := mirror.NewMirror(mirrorHost, mirrorPath)
-		rewrittenPath := m.Template.Render(imageRef)
-		taskState.Mirror.Endpoint = mirrorHost
-		taskState.Mirror.Path = rewrittenPath
+		host, repoPath, err := mirror.Resolve(mirrorHost, mirrorPath, imageRef)
+		if err != nil {
+			return fmt.Errorf("mirror: %w", err)
+		}
+		taskState.Mirror.Endpoint = host
+		taskState.Mirror.Path = repoPath
 
 		// Build the mirror reference by hand rather than re-parsing a string:
 		// the rendered path carries no tag, so ref.Parse would default it to
 		// "latest" and silently fetch the wrong image. Tag/digest and the
 		// namespace/name split are preserved from the original reference.
-		fetchRef = mirror.FetchRef(mirrorHost, rewrittenPath, imageRef)
+		fetchRef = mirror.FetchRef(host, repoPath, imageRef)
 		fmt.Printf("Using mirror: %s\n", fetchRef.String())
 	}
 
 	// Fetch manifest
-	fmt.Printf("Fetching manifest for %s (%s)...\n", canonical, targetPlatform)
+	fmt.Printf("Fetching manifest for %s...\n", canonical)
 	manifest, err := regClient.GetManifest(fetchRef, targetPlatform)
 	if err != nil {
 		return fmt.Errorf("fetch manifest: %w", err)
 	}
+	printPlatformChoice(targetPlatform, manifest)
 
 	// Update task state with manifest info
 	if taskState.ManifestDigest == "" {
@@ -190,7 +196,26 @@ func runPull(cmd *cobra.Command, args []string) error {
 	fmt.Println("\nAll layers downloaded successfully")
 
 	// Assemble docker-archive tar
-	return assembleTarFromTask(taskState, st, canonical, targetPlatform)
+	return assembleTarFromTask(taskState, st, loadName(canonical), targetPlatform)
+}
+
+func loadName(canonical string) string {
+	if outputName != "" {
+		return outputName
+	}
+	return canonical
+}
+
+func printPlatformChoice(requested string, manifest *registry.Manifest) {
+	selected := requested
+	if manifest.Platform != "" {
+		selected = manifest.Platform
+	}
+	fmt.Printf("Platform:  %s\n", selected)
+	if len(manifest.Available) == 0 {
+		return
+	}
+	fmt.Printf("Available: %s\n", strings.Join(manifest.Available, ", "))
 }
 
 func downloadLayers(

@@ -39,7 +39,8 @@ type Mirror struct {
 	Template *Template
 }
 
-// NewMirror creates a new mirror
+// NewMirror creates a new mirror. An empty template means "use the image
+// repository path as-is" (docker.1ms.run/library/nginx), not a template variable.
 func NewMirror(host, template string) *Mirror {
 	if template == "" {
 		template = "{repo}"
@@ -48,6 +49,55 @@ func NewMirror(host, template string) *Mirror {
 		Host:     host,
 		Template: NewTemplate(template),
 	}
+}
+
+// Parse splits a mirror address into a registry host and an optional path prefix.
+//
+//	docker.1ms.run                              → docker.1ms.run, ""
+//	https://docker.1ms.run/                     → docker.1ms.run, ""
+//	swr.example.com/ddn-k8s/docker.io           → swr.example.com, ddn-k8s/docker.io
+//	localhost:5000/mirror                       → localhost:5000, mirror
+func Parse(raw string) (host, prefix string, err error) {
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimPrefix(raw, "https://")
+	raw = strings.TrimPrefix(raw, "http://")
+	raw = strings.Trim(raw, "/")
+	if raw == "" {
+		return "", "", fmt.Errorf("empty mirror address")
+	}
+	host, prefix, _ = strings.Cut(raw, "/")
+	if host == "" || strings.Contains(host, " ") {
+		return "", "", fmt.Errorf("invalid mirror address %q", raw)
+	}
+	return host, prefix, nil
+}
+
+// Resolve builds the registry host and repository path used to fetch an image.
+//
+// With no template, the image repository is appended to the mirror address:
+//
+//	-m docker.1ms.run  nginx:1.27
+//	→ docker.1ms.run / library/nginx
+//
+// A prefix written in the address is kept in front of the repository:
+//
+//	-m swr.example.com/ddn-k8s/docker.io  nginx:1.27
+//	→ swr.example.com / ddn-k8s/docker.io/library/nginx
+//
+// template is the advanced --mirror-path form. It is applied only when set.
+func Resolve(mirrorSpec, template string, image *ref.Reference) (host, repoPath string, err error) {
+	host, prefix, err := Parse(mirrorSpec)
+	if err != nil {
+		return "", "", err
+	}
+	if template != "" {
+		return host, NewTemplate(template).Render(image), nil
+	}
+	repoPath = image.Repo()
+	if prefix != "" {
+		repoPath = prefix + "/" + repoPath
+	}
+	return host, repoPath, nil
 }
 
 // RewriteRef rewrites a reference to use this mirror

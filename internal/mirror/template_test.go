@@ -146,6 +146,58 @@ func TestMirror_RewriteRef(t *testing.T) {
 	}
 }
 
+func TestResolvePlainHost(t *testing.T) {
+	image := &ref.Reference{Registry: "docker.io", Namespace: "library", Name: "nginx", Tag: "1.27"}
+
+	host, path, err := Resolve("docker.1ms.run", "", image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host != "docker.1ms.run" || path != "library/nginx" {
+		t.Fatalf("got %s %s", host, path)
+	}
+
+	host, path, err = Resolve("https://docker.1ms.run/", "", image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host != "docker.1ms.run" || path != "library/nginx" {
+		t.Fatalf("scheme strip got %s %s", host, path)
+	}
+}
+
+func TestResolvePrefix(t *testing.T) {
+	image := &ref.Reference{Registry: "docker.io", Namespace: "library", Name: "nginx", Tag: "1.27"}
+	host, path, err := Resolve("swr.example.com/ddn-k8s/docker.io", "", image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host != "swr.example.com" || path != "ddn-k8s/docker.io/library/nginx" {
+		t.Fatalf("got %s %s", host, path)
+	}
+}
+
+func TestResolveTemplateStillWorks(t *testing.T) {
+	image := &ref.Reference{Registry: "docker.io", Namespace: "library", Name: "nginx", Tag: "1.27"}
+	host, path, err := Resolve("mirror.example.com", "{registry}/{repo}", image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host != "mirror.example.com" || path != "docker.io/library/nginx" {
+		t.Fatalf("got %s %s", host, path)
+	}
+}
+
+func TestParseKeepsPortOnHost(t *testing.T) {
+	host, prefix, err := Parse("localhost:5000/mirror")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host != "localhost:5000" || prefix != "mirror" {
+		t.Fatalf("got %s %s", host, prefix)
+	}
+}
+
 func TestFetchRef(t *testing.T) {
 	tests := []struct {
 		name string

@@ -59,10 +59,8 @@ func (c *Client) GetManifest(r *ref.Reference, platform string) (*Manifest, erro
 	}
 
 	manifestDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(body))
-	mediaType := resp.Header.Get("Content-Type")
-
-	// Check if it's a manifest list/index
-	if mediaType == MediaTypeOCIIndex || mediaType == MediaTypeDockerManifestList {
+	// Check if it's a manifest list/index. Some registries append "; charset=utf-8".
+	if isIndex(resp.Header.Get("Content-Type"), body) {
 		return authedClient.selectPlatformManifest(r, body, platform)
 	}
 
@@ -76,6 +74,25 @@ func (c *Client) GetManifest(r *ref.Reference, platform string) (*Manifest, erro
 	return &manifest, nil
 }
 
+func isIndex(mediaType string, body []byte) bool {
+	if i := strings.Index(mediaType, ";"); i >= 0 {
+		mediaType = strings.TrimSpace(mediaType[:i])
+	}
+	if mediaType == MediaTypeOCIIndex || mediaType == MediaTypeDockerManifestList {
+		return true
+	}
+	return looksLikeIndex(body)
+}
+
+// looksLikeIndex reports an index whose Content-Type was missing or generic.
+func looksLikeIndex(body []byte) bool {
+	var list ManifestList
+	if err := json.Unmarshal(body, &list); err != nil {
+		return false
+	}
+	return len(list.Manifests) > 0 && len(list.Manifests[0].Digest) > 0 && list.Manifests[0].Platform != nil
+}
+
 // selectPlatformManifest selects a platform-specific manifest from a list
 func (c *Client) selectPlatformManifest(r *ref.Reference, listBody []byte, platform string) (*Manifest, error) {
 	var list ManifestList
@@ -83,22 +100,9 @@ func (c *Client) selectPlatformManifest(r *ref.Reference, listBody []byte, platf
 		return nil, fmt.Errorf("parse manifest list: %w", err)
 	}
 
-	// Parse platform (e.g., "linux/arm64")
-	targetOS, targetArch := parsePlatform(platform)
-
-	// Find matching platform
-	var selectedDigest string
-	for _, m := range list.Manifests {
-		if m.Platform != nil {
-			if m.Platform.OS == targetOS && m.Platform.Architecture == targetArch {
-				selectedDigest = m.Digest
-				break
-			}
-		}
-	}
-
-	if selectedDigest == "" {
-		return nil, fmt.Errorf("no manifest found for platform %s/%s", targetOS, targetArch)
+	selectedDigest, selectedName, available, err := choosePlatform(list, platform)
+	if err != nil {
+		return nil, err
 	}
 
 	// Fetch the platform-specific manifest
@@ -130,7 +134,51 @@ func (c *Client) selectPlatformManifest(r *ref.Reference, listBody []byte, platf
 	}
 
 	manifest.Digest = selectedDigest
+	manifest.Platform = selectedName
+	manifest.Available = available
 	return &manifest, nil
+}
+
+// choosePlatform picks the manifest whose os/arch matches platform and lists
+// the other runnable platforms in the index. Attestation entries (unknown/unknown)
+// are omitted.
+func choosePlatform(list ManifestList, platform string) (digest, selected string, available []string, err error) {
+	targetOS, targetArch := parsePlatform(platform)
+	for _, m := range list.Manifests {
+		name := formatPlatform(m.Platform)
+		if name == "" {
+			continue
+		}
+		available = append(available, name)
+		if digest == "" && m.Platform.OS == targetOS && m.Platform.Architecture == targetArch {
+			digest = m.Digest
+			selected = name
+		}
+	}
+	if digest == "" {
+		choices := "(none)"
+		if len(available) > 0 {
+			choices = strings.Join(available, ", ")
+		}
+		return "", "", available, fmt.Errorf("platform %s/%s is not in this image\navailable: %s\nselect one with --platform", targetOS, targetArch, choices)
+	}
+	return digest, selected, available, nil
+}
+
+// formatPlatform renders a platform as os/arch[/variant]. Empty when the
+// entry is an attestation manifest rather than a runnable image.
+func formatPlatform(p *Platform) string {
+	if p == nil || p.OS == "" || p.Architecture == "" {
+		return ""
+	}
+	if p.OS == "unknown" || p.Architecture == "unknown" {
+		return ""
+	}
+	name := p.OS + "/" + p.Architecture
+	if p.Variant != "" {
+		name += "/" + p.Variant
+	}
+	return name
 }
 
 // parsePlatform parses a platform string like "linux/arm64"

@@ -40,8 +40,11 @@ Examples:
   # With proxy
   dpull --proxy http://127.0.0.1:7890 nginx:1.27
 
-  # With mirror
-  dpull -m mirror.example.com nginx:1.27
+  # Pull through a mirror. The image repository is appended automatically.
+  dpull -m docker.1ms.run nginx:1.27
+
+  # Rename the image stored in the tar
+  dpull -m docker.1ms.run --name mynginx:1.27 nginx:1.27
 
   # Multi-connection download
   dpull -x 16 -j 5 docker.io/lmsysorg/sglang:v0.5.15`,
@@ -72,9 +75,12 @@ func init() {
 	// Platform selection
 	rootCmd.PersistentFlags().StringVar(&platform, "platform", "", "target platform (e.g., linux/amd64, linux/arm64)")
 
-	// Mirror configuration
-	rootCmd.PersistentFlags().StringVarP(&mirrorHost, "mirror", "m", "", "mirror registry endpoint")
-	rootCmd.PersistentFlags().StringVar(&mirrorPath, "mirror-path", "{registry}/{repo}", "mirror path template")
+	// Mirror configuration. The address is a registry host, optionally with a
+	// path prefix. The image repository is appended, so -m docker.1ms.run
+	// fetches docker.1ms.run/library/nginx. --mirror-path is only for a layout
+	// that cannot be written as a prefix.
+	rootCmd.PersistentFlags().StringVarP(&mirrorHost, "mirror", "m", "", "mirror address, e.g. docker.1ms.run or host/prefix")
+	rootCmd.PersistentFlags().StringVar(&mirrorPath, "mirror-path", "", "advanced path template; leave empty to use the mirror address as-is")
 
 	// Plain HTTP (for local testing)
 	rootCmd.PersistentFlags().BoolVar(&plainHTTP, "plain-http", false, "use HTTP instead of HTTPS (insecure, for testing)")

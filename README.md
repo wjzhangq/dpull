@@ -44,8 +44,11 @@ dpull nginx:1.27
 # 使用代理
 dpull --proxy http://127.0.0.1:7890 nginx:1.27
 
-# 使用镜像源（以 1ms.run 为例，该站路径模板为 {repo}）
-dpull -m docker.1ms.run --mirror-path "{repo}" nginx:1.27
+# 使用镜像源。仓库路径会自动接在地址后面
+dpull -m docker.1ms.run nginx:1.27
+
+# 导入后的镜像名改成别的
+dpull -m docker.1ms.run --name mynginx:1.27 nginx:1.27
 
 # 多连接下载（每个 blob 16 个连接，同时下载 5 个 blob）
 dpull -x 16 -j 5 docker.io/lmsysorg/sglang:v0.5.15
@@ -141,8 +144,7 @@ auth:
 
 # 镜像配置（可选）
 # mirror:
-#   endpoint: "mirror.example.com"
-#   path_template: "{registry}/{repo}"
+#   endpoint: "docker.1ms.run"
 ```
 
 ### 查看当前配置
@@ -165,8 +167,9 @@ dpull config show
 --max-retries int        每个分片的最大重试次数（默认 10）
 --progress string        进度显示模式：bar, plain, json, none（默认 bar）
 --platform string        目标平台（如 linux/amd64, linux/arm64）
--m, --mirror string      镜像源端点
---mirror-path string     镜像路径模板（默认 {registry}/{repo}）
+-m, --mirror string      镜像站地址，如 docker.1ms.run；需要前缀时写成 host/prefix
+--name string            写入 tar 的镜像名，docker load 后显示这个名字
+--mirror-path string     高级用法：路径模板。留空则直接使用 -m 的地址
 --plain-http             使用 HTTP 而非 HTTPS（不安全，仅用于测试）
 ```
 
@@ -203,47 +206,41 @@ dpull nginx:1.27
 dpull nginx:1.27
 ```
 
-## 镜像源配置
+## 镜像源
 
-### 模板变量
-
-镜像路径模板支持以下变量：
-
-- `{registry}`: 注册表地址（如 docker.io）
-- `{repo}`: 完整仓库路径（如 lmsysorg/sglang）
-- `{namespace}`: 命名空间（如 lmsysorg）
-- `{name}`: 镜像名（如 sglang）
-- `{tag}`: 标签（如 v1）
-
-### 示例
+`-m` 写镜像站地址。镜像自己的仓库路径会接在后面，不用再写 `{repo}` 这类模板。
 
 ```bash
-# 1ms.run（直通型，路径模板为 {repo}）
-dpull -m docker.1ms.run --mirror-path "{repo}" nginx:1.27
+# 1ms.run
+dpull -m docker.1ms.run nginx:1.27
 # 实际请求：https://docker.1ms.run/library/nginx
 
-# 默认模板：{registry}/{repo}
-dpull -m mirror.example.com --mirror-path "{registry}/{repo}" nginx:1.27
-# 实际请求：https://mirror.example.com/docker.io/library/nginx
+# 地址里可以带固定前缀
+dpull -m swr.example.com/ddn-k8s/docker.io nginx:1.27
+# 实际请求：https://swr.example.com/ddn-k8s/docker.io/library/nginx
 
-# 自定义模板
-dpull -m mirror.example.com --mirror-path "docker/{namespace}/{name}" nginx:1.27
-# 实际请求：https://mirror.example.com/docker/library/nginx
+# docker load 后的名字。不写则保持原来的名字
+dpull -m docker.1ms.run --name mynginx:1.27 nginx:1.27
 ```
 
-### 常见镜像源模板
+| 镜像源 | `-m` 怎么写 |
+|---|---|
+| 1ms.run、南大镜像站 | `docker.1ms.run` |
+| 华为 SWR ddn-k8s | `HOST/ddn-k8s/docker.io` |
+| Harbor Proxy Cache | `HOST/dockerhub-proxy` |
 
-| 镜像源 | 实际地址 | 模板 |
-|---|---|---|
-| 1ms.run（直通型） | `HOST/lmsysorg/sglang` | `{repo}` |
-| 南大镜像站 | `HOST/lmsysorg/sglang` | `{repo}` |
-| 华为 SWR ddn-k8s | `HOST/ddn-k8s/docker.io/lmsysorg/sglang` | `ddn-k8s/{registry}/{repo}` |
-| 阿里云个人版 | `HOST/myns/sglang` | `myns/{name}` |
-| Harbor Proxy Cache | `HOST/dockerhub-proxy/lmsysorg/sglang` | `dockerhub-proxy/{repo}` |
+官方镜像 `nginx` 的仓库路径是 `library/nginx`，dpull 会自动补上。
 
-> **注意**：Docker Hub 官方镜像（如 `nginx`）的完整仓库路径是 `library/nginx`，dpull 内部会自动补全，即 `{repo}` = `library/nginx`、`{namespace}` = `library`、`{name}` = `nginx`。
+多平台镜像会打印当前选择和可选项。换平台用 `--platform`：
 
-**注意**：无论使用哪个镜像源下载，`docker load` 后显示的镜像名始终是原始名称（如 `nginx:1.27`），不会显示镜像源地址。
+```text
+Platform:  linux/amd64
+Available: linux/amd64, linux/arm64/v8
+```
+
+```bash
+dpull --platform linux/arm64 nginx:1.27
+```
 
 ## 进度显示模式
 
@@ -270,7 +267,7 @@ dpull --progress none nginx:1.27
 ```bash
 dpull --proxy http://127.0.0.1:7890 nginx:1.27
 # 或使用镜像源（如 1ms.run）
-dpull -m docker.1ms.run --mirror-path "{repo}" nginx:1.27
+dpull -m docker.1ms.run nginx:1.27
 ```
 
 增加连接数和并发数：
