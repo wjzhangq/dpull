@@ -32,9 +32,11 @@ type MirrorInfo struct {
 	Path     string `json:"path"`
 }
 
-// BlobState tracks download state for a single blob
+// BlobState tracks download state for a single blob.
+// Path is set for model files. Docker layers leave it empty.
 type BlobState struct {
 	Digest    string `json:"digest"`
+	Path      string `json:"path,omitempty"`
 	Size      int64  `json:"size"`
 	PieceSize int64  `json:"piece_size,omitempty"`
 	Pieces    int    `json:"pieces,omitempty"`

@@ -2,6 +2,8 @@
 
 Docker 镜像下载工具，支持多连接下载、字节级断点续传、镜像源重写和代理配置。
 
+同仓库的 `mpull` 用同一套下载引擎拉取模型仓库。Hugging Face 和 HF-Mirror 共用协议，只换域名；ModelScope 是另一家仓库，用 `ms:org/name`。
+
 ## 特性
 
 - **字节级断点续传**：支持任意时刻中断和恢复，不会重复下载已完成的部分
@@ -20,18 +22,28 @@ Docker 镜像下载工具，支持多连接下载、字节级断点续传、镜�
 ```bash
 git clone https://github.com/wjzhangq/dpull.git
 cd dpull
-go build -o bin/dpull ./cmd/dpull
+make build
+# bin/dpull  下载 Docker 镜像
+# bin/mpull  下载模型仓库
 ```
 
 ### 使用 go install
 
 ```bash
 go install github.com/wjzhangq/dpull/cmd/dpull@latest
+go install github.com/wjzhangq/dpull/cmd/mpull@latest
 ```
 
 ### 下载预编译二进制
 
-从 [Releases](https://github.com/wjzhangq/dpull/releases) 页面下载对应平台的二进制文件。
+从 [Releases](https://github.com/wjzhangq/dpull/releases) 下载对应平台的压缩包。每个包里同时有 `dpull` 和 `mpull`（Windows 为 `.exe`）。
+
+```text
+dpull_v0.1.0_darwin_arm64.tar.gz
+├── dpull
+├── mpull
+└── README.md
+```
 
 ## 快速开始
 
@@ -111,6 +123,39 @@ dpull rm --all
 # 查看镜像详情（不下载）
 dpull info nginx:1.27
 ```
+
+## 模型下载（mpull）
+
+`mpull` 下载 Hugging Face、HF-Mirror 和 ModelScope 上的模型文件，断点续传和多连接与 `dpull` 相同。仓库 ID 写成 `org/name`。
+
+不写镜像站、也没配代理时，Hugging Face 仓库走 `hf-mirror.com`。配了代理，或者 `-m huggingface`，走官方。连不上，或者镜像站只是把请求转回官方，会换另一个 Hugging Face 域名再试一次。ModelScope 是另一家仓库，用 `ms:` 前缀，不能靠 `-m` 把 Hugging Face 的 ID 改写成它的 ID。
+
+| 写法 | 仓库 | 默认分支 |
+|---|---|---|
+| `org/name`、`hf:org/name` | Hugging Face | `main` |
+| `-m huggingface org/name` | huggingface.co | `main` |
+| `ms:org/name` | modelscope.cn | `master` |
+
+```bash
+# 默认 HF-Mirror
+mpull Qwen/Qwen2.5-7B-Instruct
+
+# 官方 Hub。门禁模型需要 token，也读 HF_TOKEN 和 ~/.cache/huggingface/token
+mpull -m huggingface --token "$HF_TOKEN" meta-llama/Llama-3.1-8B-Instruct
+
+# ModelScope。token 读 MODELSCOPE_API_TOKEN 和 ~/.modelscope/credentials
+mpull ms:Qwen/Qwen2.5-7B-Instruct
+
+# 先看文件和体积
+mpull info Qwen/Qwen2.5-7B-Instruct
+
+# 只要权重和配置。-x / -j / --proxy 与 dpull 相同
+mpull -x 16 -j 3 -o ./models/qwen \
+  --include '*.safetensors' --include '*.json' \
+  Qwen/Qwen2.5-7B-Instruct
+```
+
+文件先进入 `~/.mpull/cache`，校验通过后硬链接到输出目录。中断后重跑同一条命令会从分片继续。也可以直接粘贴仓库页面地址，例如 `https://huggingface.co/Qwen/Qwen2.5-7B-Instruct/tree/main`。
 
 ## 配置文件
 
@@ -372,10 +417,7 @@ auth:
 ### 构建
 
 ```bash
-# 开发构建
-go build -o bin/dpull ./cmd/dpull
-
-# 生产构建（注入版本信息）
+# 同时构建 dpull 和 mpull，并注入版本信息
 make build
 ```
 
@@ -396,12 +438,14 @@ make test-integration
 
 ```
 dpull/
-├── cmd/dpull/          # CLI 入口
+├── cmd/dpull/          # Docker 镜像 CLI
+├── cmd/mpull/          # 模型仓库 CLI
 ├── internal/
 │   ├── archive/        # docker-archive tar 组装
 │   ├── auth/           # Docker 凭据兼容
 │   ├── config/         # 配置文件加载
 │   ├── downloader/     # 多连接下载引擎
+│   ├── model/          # Hugging Face / ModelScope
 │   ├── mirror/         # 镜像源模板渲染
 │   ├── progress/       # 进度显示
 │   ├── ref/            # 镜像引用解析

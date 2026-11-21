@@ -57,7 +57,7 @@ jobs:
           echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
-      - name: Build
+      - name: Build dpull and mpull
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -65,13 +65,13 @@ jobs:
         run: |
           NAME="dpull_${{ steps.meta.outputs.version }}_${{ matrix.goos }}_${{ matrix.goarch }}"
           mkdir -p "dist/${NAME}"
-          go build -trimpath \
-            -ldflags "-s -w \
-              -X github.com/wjzhangq/dpull/pkg/version.Version=${{ steps.meta.outputs.version }} \
-              -X github.com/wjzhangq/dpull/pkg/version.Commit=${{ steps.meta.outputs.commit }} \
-              -X github.com/wjzhangq/dpull/pkg/version.BuildDate=${{ steps.meta.outputs.date }}" \
-            -o "dist/${NAME}/dpull${{ matrix.ext }}" ./cmd/dpull
-          cp README.md "dist/${NAME}/" 2>/dev/null || true
+          LDFLAGS="-s -w \
+            -X github.com/wjzhangq/dpull/pkg/version.Version=${{ steps.meta.outputs.version }} \
+            -X github.com/wjzhangq/dpull/pkg/version.Commit=${{ steps.meta.outputs.commit }} \
+            -X github.com/wjzhangq/dpull/pkg/version.BuildDate=${{ steps.meta.outputs.date }}"
+          go build -trimpath -ldflags "$LDFLAGS" -o "dist/${NAME}/dpull${{ matrix.ext }}" ./cmd/dpull
+          go build -trimpath -ldflags "$LDFLAGS" -o "dist/${NAME}/mpull${{ matrix.ext }}" ./cmd/mpull
+          cp README.md LICENSE "dist/${NAME}/"
           echo "ARTIFACT_NAME=${NAME}" >> "$GITHUB_ENV"
 
       - name: Package
@@ -119,6 +119,18 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
+          body: |
+            每个压缩包里同时有 `dpull`（Docker 镜像）和 `mpull`（Hugging Face / HF-Mirror / ModelScope）。
+
+            | 系统 | 文件 |
+            | --- | --- |
+            | Linux x86_64 | `dpull_${{ steps.meta.outputs.version }}_linux_amd64.tar.gz` |
+            | Linux arm64 | `dpull_${{ steps.meta.outputs.version }}_linux_arm64.tar.gz` |
+            | macOS Intel | `dpull_${{ steps.meta.outputs.version }}_darwin_amd64.tar.gz` |
+            | macOS Apple Silicon | `dpull_${{ steps.meta.outputs.version }}_darwin_arm64.tar.gz` |
+            | Windows x86_64 | `dpull_${{ steps.meta.outputs.version }}_windows_amd64.zip` |
+
+            Linux / macOS 解压后把 `dpull` 和 `mpull` 放到 `PATH`。Windows 解压后得到 `dpull.exe` 和 `mpull.exe`。
           files: |
             artifacts/**/*.tar.gz
             artifacts/**/*.zip

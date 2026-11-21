@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -27,18 +28,26 @@ func retryConfig(maxRetries int) backoff.BackOff {
 	return backoff.WithMaxRetries(b, uint64(maxRetries))
 }
 
-// isRetryableError reports whether an error should trigger a retry
+type permanentError interface {
+	Permanent() bool
+}
+
+// isRetryableError reports whether an error should trigger a retry.
+// Canceled work and errors that mark themselves permanent stop immediately.
+// Everything else still retries: a dropped connection is the common case.
 func isRetryableError(err error) bool {
-	if err == nil {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	var permanent permanentError
+	if errors.As(err, &permanent) && permanent.Permanent() {
 		return false
 	}
 
-	// Always retry these
 	if errors.Is(err, ErrURLExpired) || errors.Is(err, ErrRateLimited) {
 		return true
 	}
 
-	// Network errors are generally retryable
 	return true
 }
 

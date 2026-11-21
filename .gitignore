@@ -16,8 +16,10 @@ dist/
 # Go workspace file
 go.work
 
-# Build artifacts
-dpull
+# Root binaries from `go build -o dpull` / `go build -o mpull`.
+# Anchored so cmd/mpull is still tracked.
+/dpull
+/mpull
 
 # Cache and temporary files
 .cache/

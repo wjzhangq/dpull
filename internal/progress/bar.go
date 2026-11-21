@@ -39,11 +39,7 @@ func (t *BarTracker) AddBlob(digest string, size int64, index, total int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Short digest for display (first 8 hex chars after sha256:)
-	shortDigest := digest
-	if len(digest) > 15 {
-		shortDigest = digest[7:15]
-	}
+	shortDigest := ShortLabel(digest)
 
 	bar := t.container.AddBar(size,
 		mpb.PrependDecorators(

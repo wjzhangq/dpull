@@ -11,14 +11,15 @@ LDFLAGS := -s -w \
 
 BINDIR ?= bin
 BINARY := $(BINDIR)/dpull
+MPULL := $(BINDIR)/mpull
 
 help:
 	@echo "dpull Makefile targets:"
-	@echo "  build            Build dpull binary"
+	@echo "  build            Build dpull and mpull"
 	@echo "  clean            Remove build artifacts"
 	@echo "  test             Run all tests"
 	@echo "  test-verbose     Run tests with verbose output"
-	@echo "  install          Install dpull to GOPATH/bin"
+	@echo "  install          Install dpull and mpull to GOPATH/bin"
 	@echo "  release          Build release binaries for all platforms"
 	@echo "  lint             Run golangci-lint (requires golangci-lint)"
 	@echo ""
@@ -30,8 +31,11 @@ help:
 build:
 	@mkdir -p $(BINDIR)
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/dpull
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $(MPULL) ./cmd/mpull
 	@echo "Built: $(BINARY)"
+	@echo "Built: $(MPULL)"
 	@$(BINARY) --version
+	@$(MPULL) --version
 
 clean:
 	rm -rf $(BINDIR) dist
@@ -43,7 +47,7 @@ test-verbose:
 	go test -v ./...
 
 install:
-	CGO_ENABLED=0 go install -trimpath -ldflags "$(LDFLAGS)" ./cmd/dpull
+	CGO_ENABLED=0 go install -trimpath -ldflags "$(LDFLAGS)" ./cmd/dpull ./cmd/mpull
 
 lint:
 	golangci-lint run ./...
@@ -59,10 +63,13 @@ release:
 		windows/amd64; do \
 		goos=$${platform%/*}; \
 		goarch=$${platform#*/}; \
-		output="dist/dpull_$(VERSION)_$${goos}_$${goarch}"; \
-		[ "$$goos" = "windows" ] && output="$${output}.exe" || true; \
+		name="dpull_$(VERSION)_$${goos}_$${goarch}"; \
+		ext=""; \
+		[ "$$goos" = "windows" ] && ext=".exe"; \
 		echo "Building $$goos/$$goarch..."; \
-		GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o "$$output" ./cmd/dpull || exit 1; \
+		mkdir -p "dist/$$name"; \
+		GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o "dist/$$name/dpull$$ext" ./cmd/dpull || exit 1; \
+		GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o "dist/$$name/mpull$$ext" ./cmd/mpull || exit 1; \
 	done
 	@echo "Release binaries created in dist/"
 	@ls -lh dist/

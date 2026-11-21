@@ -54,11 +54,7 @@ func (t *PlainTracker) UpdateBlob(digest string, downloaded int64) {
 	blob.downloaded = downloaded
 	t.aggregate.Update(downloaded)
 
-	// Print progress line
-	shortDigest := digest
-	if len(digest) > 15 {
-		shortDigest = digest[7:15]
-	}
+	shortDigest := ShortLabel(digest)
 
 	pct := float64(0)
 	if blob.size > 0 {
@@ -90,10 +86,7 @@ func (t *PlainTracker) CompleteBlob(digest string) {
 
 	blob.downloaded = blob.size
 
-	shortDigest := digest
-	if len(digest) > 15 {
-		shortDigest = digest[7:15]
-	}
+	shortDigest := ShortLabel(digest)
 
 	fmt.Printf("[%2d/%2d] %s complete (%s)\n",
 		blob.index,
