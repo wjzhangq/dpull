@@ -36,13 +36,11 @@ go install github.com/wjzhangq/dpull/cmd/mpull@latest
 
 ### 下载预编译二进制
 
-从 [Releases](https://github.com/wjzhangq/dpull/releases) 下载对应平台的压缩包。每个包里同时有 `dpull` 和 `mpull`（Windows 为 `.exe`）。
+从 [Releases](https://github.com/wjzhangq/dpull/releases) 下载对应平台的压缩包。`dpull` 和 `mpull` 各有一个包（Windows 为 `.zip`，里面是 `.exe`）。
 
 ```text
-dpull_v0.1.0_darwin_arm64.tar.gz
-├── dpull
-├── mpull
-└── README.md
+dpull_v1.0.5_darwin_arm64.tar.gz
+mpull_v1.0.5_darwin_arm64.tar.gz
 ```
 
 ## 快速开始

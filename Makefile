@@ -63,13 +63,23 @@ release:
 		windows/amd64; do \
 		goos=$${platform%/*}; \
 		goarch=$${platform#*/}; \
-		name="dpull_$(VERSION)_$${goos}_$${goarch}"; \
 		ext=""; \
 		[ "$$goos" = "windows" ] && ext=".exe"; \
 		echo "Building $$goos/$$goarch..."; \
-		mkdir -p "dist/$$name"; \
-		GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o "dist/$$name/dpull$$ext" ./cmd/dpull || exit 1; \
-		GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o "dist/$$name/mpull$$ext" ./cmd/mpull || exit 1; \
+		mkdir -p "dist/build"; \
+		GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o "dist/build/dpull$$ext" ./cmd/dpull || exit 1; \
+		GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o "dist/build/mpull$$ext" ./cmd/mpull || exit 1; \
+		for tool in dpull mpull; do \
+			name="$${tool}_$(VERSION)_$${goos}_$${goarch}"; \
+			mkdir -p "dist/$$name"; \
+			cp "dist/build/$${tool}$$ext" "dist/$$name/$${tool}$$ext"; \
+			cp README.md LICENSE "dist/$$name/"; \
+			if [ "$$goos" = "windows" ]; then \
+				(cd dist && zip -r "$$name.zip" "$$name"); \
+			else \
+				(cd dist && tar -czf "$$name.tar.gz" "$$name"); \
+			fi; \
+		done; \
 	done
 	@echo "Release binaries created in dist/"
 	@ls -lh dist/
